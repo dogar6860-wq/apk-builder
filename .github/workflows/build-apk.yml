@@ -1,4 +1,5 @@
 name: Build APK from Netlify project
+run-name: Build ${{ github.event.inputs.app_name || 'APK' }} [${{ github.event.inputs.request_id || 'manual' }}]
 
 # Put this file in your repo at: .github/workflows/build-apk.yml
 # Run it from the GitHub "Actions" tab (works from a phone browser too).
@@ -45,6 +46,14 @@ on:
         description: "Optional direct link to a square PNG icon (1024x1024 best)"
         required: false
         default: ""
+      icon_path:
+        description: "Used by the website: icon file inside this repo"
+        required: false
+        default: ""
+      request_id:
+        description: "Used by the website: build id"
+        required: false
+        default: ""
   # Optional auto trigger after each Netlify deploy. POST to
   # /repos/OWNER/REPO/dispatches with {"event_type":"netlify-deployed",
   # "client_payload":{"url":"...","app_name":"...","app_id":"..."}}
@@ -54,6 +63,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       SITE_URL: ${{ github.event.inputs.url || github.event.client_payload.url }}
       APP_NAME: ${{ github.event.inputs.app_name || github.event.client_payload.app_name || 'My App' }}
@@ -63,6 +74,8 @@ jobs:
       BUILD_COMMAND: ${{ github.event.inputs.build_command || github.event.client_payload.build_command || '' }}
       PERMS: ${{ github.event.inputs.permissions || github.event.client_payload.permissions || 'CAMERA,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION,POST_NOTIFICATIONS,VIBRATE,READ_MEDIA_IMAGES,READ_MEDIA_VIDEO,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE' }}
       ICON_URL: ${{ github.event.inputs.icon_url || github.event.client_payload.icon_url || '' }}
+      ICON_PATH: ${{ github.event.inputs.icon_path || '' }}
+      REQUEST_ID: ${{ github.event.inputs.request_id || '' }}
       RUN_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
@@ -221,11 +234,17 @@ jobs:
           PY
 
       - name: App icon (optional)
-        if: env.ICON_URL != ''
+        if: env.ICON_URL != '' || env.ICON_PATH != ''
         working-directory: _apk
         run: |
           mkdir -p assets
-          curl -fL "$ICON_URL" -o assets/icon.png
+          if [ -n "$ICON_PATH" ] && [ -f "$GITHUB_WORKSPACE/$ICON_PATH" ]; then
+            cp "$GITHUB_WORKSPACE/$ICON_PATH" assets/icon.png
+          elif [ -n "$ICON_URL" ]; then
+            curl -fL "$ICON_URL" -o assets/icon.png
+          else
+            exit 0
+          fi
           npx capacitor-assets generate --android --iconBackgroundColor '#ffffff'
 
       - name: Set version (so new builds can update old ones)
@@ -269,3 +288,13 @@ jobs:
         with:
           name: apk-${{ github.run_number }}
           path: out/*.apk
+
+      - name: Publish download link (website builds)
+        if: env.REQUEST_ID != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-$REQUEST_ID" out/*.apk \
+            --title "$APP_NAME" \
+            --notes "Built from $SITE_URL ($MODE mode)" \
+            --latest=false
