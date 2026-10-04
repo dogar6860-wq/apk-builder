@@ -1,0 +1,7 @@
+[build]
+  publish = "site"
+  # Skip Netlify builds when only icons or workflow files changed
+  ignore = "git diff --quiet HEAD^ HEAD -- site netlify netlify.toml"
+
+[functions]
+  directory = "netlify/functions"
