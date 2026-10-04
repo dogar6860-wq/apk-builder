@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>APK Maker</title>
+<style>
+:root{--bg:#f4f6fb;--card:#fff;--text:#14213d;--muted:#6b7280;--accent:#0f9d73;--border:#d9dfeb}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1424;--card:#172036;--text:#e8ecf5;--muted:#9aa5bd;--accent:#19c590;--border:#2a3652}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;justify-content:center;padding:20px}
+.card{width:100%;max-width:460px;background:var(--card);border-radius:16px;padding:22px;box-shadow:0 4px 24px rgba(0,0,0,.08)}
+h1{margin:0 0 4px;font-size:22px}
+p.sub{margin:0 0 6px;color:var(--muted);font-size:14px}
+label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}
+input,select,button{width:100%;font:inherit;padding:12px;border-radius:10px;border:1px solid var(--border);background:transparent;color:inherit}
+button{background:var(--accent);border:0;color:#fff;font-weight:600;margin-top:20px;cursor:pointer}
+button:disabled{opacity:.6;cursor:default}
+.icon-row{display:flex;gap:12px;align-items:center}
+#preview{width:64px;height:64px;border-radius:14px;background:var(--border);object-fit:cover;flex:none}
+#status{margin-top:18px;font-size:14px;line-height:1.5}
+a.dl{display:block;text-align:center;text-decoration:none;background:var(--accent);color:#fff;padding:14px;border-radius:10px;font-weight:700;margin-top:10px}
+.err{color:#e11d48}
+small{color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>APK Maker</h1>
+  <p class="sub">Paste your website link, get an Android app.</p>
+
+  <label for="url">Website link</label>
+  <input id="url" type="url" placeholder="https://yoursite.netlify.app" autocomplete="off">
+
+  <label for="name">App name</label>
+  <input id="name" type="text" maxlength="40" placeholder="My App" autocomplete="off">
+
+  <label for="icon">App icon (optional)</label>
+  <div class="icon-row">
+    <img id="preview" alt="">
+    <input id="icon" type="file" accept="image/*">
+  </div>
+
+  <label for="mode">Type</label>
+  <select id="mode">
+    <option value="bundled">Works offline + online (recommended)</option>
+    <option value="live">Online only, always latest</option>
+  </select>
+
+  <label for="password">Password</label>
+  <input id="password" type="password" autocomplete="current-password">
+
+  <button id="go">Make APK</button>
+  <div id="status"></div>
+  <small>Same app name = same app, so a new APK installs as an update.</small>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let iconData = "";
+let timer = null;
+
+function store(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+
+function show(text, isErr) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = isErr ? "err" : "";
+}
+
+function showDone(url) {
+  const el = $("status");
+  el.className = "";
+  el.textContent = "Your APK is ready.";
+  const a = document.createElement("a");
+  a.className = "dl";
+  a.href = url;
+  a.textContent = "Download APK";
+  el.appendChild(a);
+}
+
+function showFailed(logs) {
+  const el = $("status");
+  el.className = "err";
+  el.textContent = "Build failed. ";
+  if (logs) {
+    const a = document.createElement("a");
+    a.href = logs; a.target = "_blank"; a.rel = "noopener"; a.textContent = "See logs";
+    el.appendChild(a);
+  }
+}
+
+$("password").value = load("pw");
+
+$("icon").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) { iconData = ""; $("preview").removeAttribute("src"); return; }
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 1024;
+    const s = Math.min(img.width, img.height);
+    c.getContext("2d").drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 1024, 1024);
+    iconData = c.toDataURL("image/png");
+    $("preview").src = iconData;
+    URL.revokeObjectURL(img.src);
+  };
+  img.onerror = () => show("Could not read that image", true);
+  img.src = URL.createObjectURL(f);
+});
+
+function poll(id) {
+  clearInterval(timer);
+  const t0 = Date.now();
+  const tick = async () => {
+    try {
+      const r = await fetch("/.netlify/functions/status?id=" + id);
+      const j = await r.json();
+      if (j.state === "done") { clearInterval(timer); $("go").disabled = false; showDone(j.url); return; }
+      if (j.state === "failed") { clearInterval(timer); $("go").disabled = false; showFailed(j.logs); return; }
+      const mins = Math.floor((Date.now() - t0) / 60000);
+      if (mins >= 30) { clearInterval(timer); $("go").disabled = false; show("Taking too long. Check the Actions tab on GitHub.", true); return; }
+      show((j.state === "queued" ? "Waiting to start" : "Building your APK") + "... " + mins + " min. Usually 4 to 8 minutes. You can keep this page open.");
+    } catch (e) { /* keep trying */ }
+  };
+  tick();
+  timer = setInterval(tick, 8000);
+}
+
+$("go").addEventListener("click", async () => {
+  const body = {
+    url: $("url").value.trim(),
+    name: $("name").value.trim(),
+    mode: $("mode").value,
+    password: $("password").value,
+    icon: iconData,
+  };
+  if (!body.url || !body.name || !body.password) { show("Fill in the link, name and password.", true); return; }
+  store("pw", body.password);
+  $("go").disabled = true;
+  show("Sending...");
+  try {
+    const r = await fetch("/.netlify/functions/build", { method: "POST", body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "Failed");
+    store("lastId", j.requestId);
+    poll(j.requestId);
+  } catch (e) {
+    show(e.message, true);
+    $("go").disabled = false;
+  }
+});
+
+const last = load("lastId");
+if (last) poll(last);
+</script>
+</body>
+</html>
